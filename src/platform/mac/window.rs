@@ -497,6 +497,32 @@ impl MacWindowState {
         self.display_link = None;
     }
 
+    /// Stop the display link while a frame is drawn at once, keeping it to run again after:
+    /// `DisplayLink`'s `Drop` never frees its CVDisplayLink, so dropping and rebuilding the link
+    /// there (`stop_display_link`, `start_display_link`) leaked one each time.
+    fn pause_display_link(&mut self) -> Option<DisplayLink> {
+        let mut link = self.display_link.take()?;
+        link.stop().log_err();
+        Some(link)
+    }
+
+    /// Run the link `pause_display_link` kept again, unless a new one was built meanwhile or the
+    /// window is hidden now (that one is dropped, as before); with none kept, start one.
+    fn resume_display_link(&mut self, paused: Option<DisplayLink>) {
+        let Some(mut link) = paused else {
+            return self.start_display_link();
+        };
+        let visible = unsafe {
+            self.native_window
+                .occlusionState()
+                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
+        };
+        if self.display_link.is_none() && visible {
+            link.start().log_err();
+            self.display_link = Some(link);
+        }
+    }
+
     fn is_maximized(&self) -> bool {
         unsafe {
             let bounds = self.bounds();
@@ -2011,7 +2037,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
             if let Some(mut callback) = lock.request_frame_callback.take() {
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(true);
-                lock.stop_display_link();
+                let paused = lock.pause_display_link();
                 drop(lock);
                 callback(Default::default());
 
@@ -2019,7 +2045,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 lock.request_frame_callback = Some(callback);
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(false);
-                lock.start_display_link();
+                lock.resume_display_link(paused);
             }
         } else {
             lock.activated_least_once = true;
@@ -2139,7 +2165,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     if let Some(mut callback) = lock.request_frame_callback.take() {
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(true);
-        lock.stop_display_link();
+        let paused = lock.pause_display_link();
         drop(lock);
         callback(Default::default());
 
@@ -2147,7 +2173,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         lock.request_frame_callback = Some(callback);
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(false);
-        lock.start_display_link();
+        lock.resume_display_link(paused);
     }
 }
 

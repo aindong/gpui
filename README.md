@@ -1,3 +1,28 @@
+# GPUI 0.2.2 with one display-link fix, for leon
+
+This repository is [GPUI](https://crates.io/crates/gpui) 0.2.2 exactly as published on crates.io
+(the first commit, unpacked from `gpui-0.2.2.crate` unchanged, sha256
+`979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`), plus one commit for
+[leon](https://github.com/aindong/leon-cli), which uses it through `[patch.crates-io]`.
+
+**The fix.** On macOS, `displayLayer:` and a window becoming key draw a frame at once: GPUI 0.2.2
+stops the window's display link, draws, and builds a new link, and the dropped link is never
+freed (`DisplayLink`'s `Drop` forgets its `CVDisplayLink` on purpose), so each call leaks one.
+The commit pauses the window's own link and runs it again after the frame instead
+(`pause_display_link`, `resume_display_link` in `src/platform/mac/window.rs`). leon shows a
+key's echo through `displayLayer:` at once, rather than at the next display tick; without the
+fix 500 keys left 500 dead links behind. Nothing else changes; other platforms are untouched.
+
+**It goes away** when a crates.io GPUI no longer rebuilds the link per call: Zed replaced the
+per-window links with one link per display that windows join and leave
+([zed#60696](https://github.com/zed-industries/zed/pull/60696)). leon's test
+`crates/leon-app/tests/gpui_display_link.rs` run against that release without the patch tells.
+
+GPUI is Zed Industries' work under the Apache License 2.0 (`LICENSE-APACHE`); so is this fix.
+The original README follows.
+
+---
+
 # Welcome to GPUI!
 
 GPUI is a hybrid immediate and retained mode, GPU accelerated, UI framework
