@@ -473,6 +473,10 @@ impl MacWindowState {
         }
     }
 
+    // The window keeps one display link for its life: stopped while hidden and during a frame
+    // drawn at once, run again after, and moved to the window's display when that changes.
+    // `DisplayLink`'s `Drop` never frees its CVDisplayLink, so a link dropped and rebuilt here
+    // (as 0.2.2 did on each call) leaked one each time.
     fn start_display_link(&mut self) {
         self.stop_display_link();
         unsafe {
@@ -485,7 +489,10 @@ impl MacWindowState {
             }
         }
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
-        if let Some(mut display_link) =
+        if let Some(display_link) = self.display_link.as_mut() {
+            display_link.set_display(display_id).log_err();
+            display_link.start().log_err();
+        } else if let Some(mut display_link) =
             DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
         {
             display_link.start().log_err();
@@ -494,32 +501,8 @@ impl MacWindowState {
     }
 
     fn stop_display_link(&mut self) {
-        self.display_link = None;
-    }
-
-    /// Stop the display link while a frame is drawn at once, keeping it to run again after:
-    /// `DisplayLink`'s `Drop` never frees its CVDisplayLink, so dropping and rebuilding the link
-    /// there (`stop_display_link`, `start_display_link`) leaked one each time.
-    fn pause_display_link(&mut self) -> Option<DisplayLink> {
-        let mut link = self.display_link.take()?;
-        link.stop().log_err();
-        Some(link)
-    }
-
-    /// Run the link `pause_display_link` kept again, unless a new one was built meanwhile or the
-    /// window is hidden now (that one is dropped, as before); with none kept, start one.
-    fn resume_display_link(&mut self, paused: Option<DisplayLink>) {
-        let Some(mut link) = paused else {
-            return self.start_display_link();
-        };
-        let visible = unsafe {
-            self.native_window
-                .occlusionState()
-                .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-        };
-        if self.display_link.is_none() && visible {
-            link.start().log_err();
-            self.display_link = Some(link);
+        if let Some(display_link) = self.display_link.as_mut() {
+            display_link.stop().log_err();
         }
     }
 
@@ -2037,7 +2020,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
             if let Some(mut callback) = lock.request_frame_callback.take() {
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(true);
-                let paused = lock.pause_display_link();
+                lock.stop_display_link();
                 drop(lock);
                 callback(Default::default());
 
@@ -2045,7 +2028,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 lock.request_frame_callback = Some(callback);
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(false);
-                lock.resume_display_link(paused);
+                lock.start_display_link();
             }
         } else {
             lock.activated_least_once = true;
@@ -2165,7 +2148,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     if let Some(mut callback) = lock.request_frame_callback.take() {
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(true);
-        let paused = lock.pause_display_link();
+        lock.stop_display_link();
         drop(lock);
         callback(Default::default());
 
@@ -2173,7 +2156,7 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         lock.request_frame_callback = Some(callback);
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(false);
-        lock.resume_display_link(paused);
+        lock.start_display_link();
     }
 }
 

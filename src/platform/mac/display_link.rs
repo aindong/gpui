@@ -14,6 +14,9 @@ use util::ResultExt;
 pub struct DisplayLink {
     display_link: Option<sys::DisplayLink>,
     frame_requests: dispatch_source_t,
+    display_id: CGDirectDisplayID,
+    // start and stop resume and suspend the dispatch source, which must stay balanced
+    running: bool,
 }
 
 impl DisplayLink {
@@ -61,11 +64,17 @@ impl DisplayLink {
             Ok(Self {
                 display_link: Some(display_link),
                 frame_requests,
+                display_id,
+                running: false,
             })
         }
     }
 
     pub fn start(&mut self) -> Result<()> {
+        if self.running {
+            return Ok(());
+        }
+        self.running = true;
         unsafe {
             dispatch_resume(crate::dispatch_sys::dispatch_object_t {
                 _ds: self.frame_requests,
@@ -76,11 +85,29 @@ impl DisplayLink {
     }
 
     pub fn stop(&mut self) -> Result<()> {
+        if !self.running {
+            return Ok(());
+        }
+        self.running = false;
         unsafe {
             dispatch_suspend(crate::dispatch_sys::dispatch_object_t {
                 _ds: self.frame_requests,
             });
             self.display_link.as_mut().unwrap().stop()?;
+        }
+        Ok(())
+    }
+}
+
+impl DisplayLink {
+    /// Tick with display `display_id`'s refresh from now on (the window moved to it).
+    pub fn set_display(&mut self, display_id: CGDirectDisplayID) -> Result<()> {
+        if display_id != self.display_id {
+            let code = unsafe {
+                sys::CVDisplayLinkSetCurrentCGDisplay(self.display_link.as_mut().unwrap(), display_id)
+            };
+            anyhow::ensure!(code == 0, "could not assign display to display link, code: {code}");
+            self.display_id = display_id;
         }
         Ok(())
     }

@@ -5,13 +5,16 @@ This repository is [GPUI](https://crates.io/crates/gpui) 0.2.2 exactly as publis
 `979b45cfa6ec723b6f42330915a1b3769b930d02b2d505f9697f8ca602bee707`), plus one commit for
 [leon](https://github.com/aindong/leon-cli), which uses it through `[patch.crates-io]`.
 
-**The fix.** On macOS, `displayLayer:` and a window becoming key draw a frame at once: GPUI 0.2.2
-stops the window's display link, draws, and builds a new link, and the dropped link is never
-freed (`DisplayLink`'s `Drop` forgets its `CVDisplayLink` on purpose), so each call leaks one.
-The commit pauses the window's own link and runs it again after the frame instead
-(`pause_display_link`, `resume_display_link` in `src/platform/mac/window.rs`). leon shows a
-key's echo through `displayLayer:` at once, rather than at the next display tick; without the
-fix 500 keys left 500 dead links behind. Nothing else changes; other platforms are untouched.
+**The fix.** GPUI 0.2.2 on macOS stops a window's display link by dropping it and starts one by
+building a new one: when a frame is drawn at once (`displayLayer:`, a window becoming key), when
+the window is hidden or shown again, and when it moves to another screen. `DisplayLink`'s `Drop`
+never frees its `CVDisplayLink` (on purpose, against a crash on the link's thread), so each of
+those leaks a link. With the fix a window keeps one link for its life: stopping it pauses it,
+starting it runs the same link again, moved to the window's current display if that changed
+(`start_display_link`, `stop_display_link` in `src/platform/mac/window.rs`; `DisplayLink`'s
+`start`, `stop` and `set_display` in `display_link.rs`). leon shows a key's echo through
+`displayLayer:` at once rather than at the next display tick; without the fix 500 keys left 500
+dead links behind. Nothing else changes; other platforms are untouched.
 
 **It goes away** when a crates.io GPUI no longer rebuilds the link per call: Zed replaced the
 per-window links with one link per display that windows join and leave
